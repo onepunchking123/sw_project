@@ -1,186 +1,241 @@
-# 낙상·미동 감지 파이프라인
+# CareGuard | 영상 기반 낙상 감지와 보호자 모니터링
 
-치매환자·독거노인 모니터링을 위한 영상 기반 이상상황 감지. 단일 카메라 영상에서 **낙상**과
-**낙상 후 방치(미동)** 를 실시간으로 잡는다. 졸업연구 + 공모전용 프로토타입.
+**카메라 역할의 스마트폰이 낙상을 감지하고, 보호자가 앱에서 감지 기록과 실시간 영상을 확인하는 프로젝트입니다.**
 
+치매환자·독거노인 돌봄 상황을 대상으로, 낙상 순간뿐 아니라 넘어진 상태가 지속되는 상황까지 감지하는 것을 목표로 합니다. 카메라 단말에서 AI 추론을 수행하고, 백엔드는 감지 이벤트와 영상 연결을 관리합니다.
+
+> **현재 단계: 개발 중인 프로토타입 · 서버 배포 전**<br>
+> 앱 화면, 단말 내 추론, 백엔드 API 및 라이브 연결 코드가 구현되어 있습니다. 실제 운영 환경의 장시간 감지 성능과 외부망 연결은 추가 검증이 필요합니다. 아래 화면과 실험 수치는 운영 서비스의 성능 보장을 의미하지 않습니다.
+
+[앱 화면](#앱-화면) · [시스템 아키텍처](#시스템-아키텍처) · [ML 파이프라인](#ml-파이프라인) · [실험 결과](#실험-결과) · [실행 안내](#실행-안내)
+
+## 주요 기능
+
+| 사용자 흐름 | 내용 |
+|---|---|
+| 보호자 설정 | 환자 정보와 비상 연락처를 등록하고 관리 |
+| 카메라 연결 | 카메라 단말에서 발급한 8자리 코드를 보호자 단말에 입력해 연결 |
+| 낙상 감지 | 카메라 단말에서 관절을 추출하고 정상·낙상 중·넘어진 상태를 분류 |
+| 실시간 확인 | 보호자 화면에서 WebRTC 영상 연결을 통해 현장을 확인 |
+| 기록 확인 | AI 감지와 수동 기록을 일별 타임라인·월별 캘린더로 조회 |
+| 상황 대응 | 긴급 상황 상세·현장 클립·연락 및 대응 기록을 위한 화면과 API 제공 |
+
+푸시 알림(FCM)은 미구현입니다. 긴급 상황 관련 화면·API가 있다는 것과 실제 기기에서 감지부터 알림·대응까지 전 과정이 검증됐다는 것은 구분합니다.
+
+## 앱 화면
+
+제공된 앱 화면 문서에서 추출한 개발 단계 화면입니다. 테스트 값과 디버그 UI가 포함되어 있으며, 배포된 제품 화면이 아닙니다.
+
+<table>
+  <tr>
+    <th>역할 선택</th>
+    <th>카메라 연결</th>
+    <th>카메라 단말</th>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/role-selection.jpg" width="220" alt="보호자용과 카메라용 역할 선택 화면"></td>
+    <td><img src="docs/assets/camera-pairing.jpg" width="220" alt="8자리 코드 입력을 통한 카메라 연결 화면"></td>
+    <td><img src="docs/assets/camera-live.jpg" width="220" alt="카메라 역할 단말의 촬영 화면"></td>
+  </tr>
+</table>
+
+<table>
+  <tr><th>일별 타임라인</th><th>월별 캘린더</th></tr>
+  <tr>
+    <td><img src="docs/assets/timeline.jpg" width="240" alt="발생 시간별 감지 기록을 보여주는 타임라인"></td>
+    <td><img src="docs/assets/calendar.jpg" width="240" alt="월별 기록 조회와 기록 추가 화면"></td>
+  </tr>
+</table>
+
+환자·연락처 등록 → 카메라 연결 → 감지·영상 확인 → 기록 조회·대응으로 이어지는 흐름입니다. 상세 구현 범위는 [앱·백엔드 연결 문서](CareGuardCamera/BACKEND_CONNECTION.md)를 참고하세요.
+
+## 시스템 아키텍처
+
+배포 인프라가 아닌 **현재 코드의 역할과 통신 경계**를 나타냅니다. 서버 배포는 아직 진행하지 않았습니다.
+
+```mermaid
+flowchart LR
+    subgraph CAMERA["카메라 역할 Android"]
+        CAP["CameraX · 영상 촬영"]
+        ML["ONNX Runtime<br/>YOLO11n-pose + GRU"]
+        RULE["상태·알림 규칙"]
+        SEND["WebRTC 영상 송신"]
+        CAP --> ML --> RULE
+        CAP --> SEND
+    end
+
+    subgraph SERVER["백엔드 · Spring Boot"]
+        API["환자·카메라·감지 이벤트 API"]
+        SIGNAL["라이브 세션·시그널링<br/>SDP / ICE"]
+        DB[("PostgreSQL")]
+        API --> DB
+        SIGNAL --> DB
+    end
+
+    subgraph GUARDIAN["보호자 역할 Android"]
+        UI["감지 기록·타임라인·상황 대응"]
+        VIEW["WebRTC 영상 수신"]
+    end
+
+    RULE -->|"REST · 감지 이벤트"| API
+    UI <-->|"REST · 조회 및 관리"| API
+    SEND <-->|"연결 정보 교환"| SIGNAL
+    VIEW <-->|"연결 정보 교환"| SIGNAL
+    SEND ==>|"직접 연결 가능한 환경의 영상"| VIEW
+    SEND -.-> TURN["TURN 중계<br/>외부망 검증 필요"]
+    TURN -.-> VIEW
 ```
-영상 → YOLOv11n-pose → 17관절 좌표 → 카메라 불변 정규화 + 속도 → GRU → normal / fall / fallen
-                                                                        ↓
-                                                    규칙: 위험 상태 3초 지속 → 낙상 후 방치 (CRITICAL)
+
+### 설계 선택과 이유
+
+| 설계 선택 | 설명 |
+|---|---|
+| **카메라 단말 내부에서 AI 추론 수행** | ONNX Runtime으로 YOLO와 GRU를 실행합니다. 관절의 시간적 변화를 분석하므로 낙상 판정을 위해 매 프레임을 서버에 전송할 필요가 없습니다. 대신 처리 성능은 단말 사양에 영향을 받습니다. |
+| **감지 이벤트와 영상 전송 경로 분리** | 감지 이벤트는 REST API로, 실시간 영상은 WebRTC로 전달합니다. 보호자의 영상 시청과 별개로 감지·이벤트 기록을 수행하도록 구성했습니다. |
+| **연결 제어와 영상 전달 분리** | Spring Boot는 세션과 SDP·ICE 교환을 담당하고, 실제 영상은 WebRTC 경로로 전달합니다. 직접 연결이 어려운 환경에서는 TURN 중계가 필요할 수 있습니다. |
+| **카메라와 보호자 역할 분리** | 지속적인 촬영·감지는 카메라 단말이, 결과 조회·영상 확인은 보호자 단말이 담당합니다. 보호자 화면 조작과 카메라의 감지 흐름을 분리했습니다. |
+
+## ML 파이프라인
+
+```mermaid
+flowchart LR
+    A["카메라 프레임"] --> B["YOLO11n-pose<br/>17개 관절 추출"]
+    B --> C["가장 큰 사람 1명 선택"]
+    C --> D["좌표 정규화<br/>엉덩이 중심·몸통 길이"]
+    D --> E["최근 2초<br/>검출률 검사·속도 추가"]
+    E --> F["64개 시점으로 보간<br/>17관절 × 5채널"]
+    F --> G["GRU<br/>normal / fall / fallen"]
+    G --> H["히스테리시스<br/>지속 시간·움직임 규칙"]
 ```
 
-## 바로 실행
+| 항목 | 현재 구성 |
+|---|---|
+| 관절 추출 | 사전학습 YOLO11n-pose, COCO 17관절 |
+| 입력 특징 | 관절별 `(x, y, 신뢰도, vx, vy)`; 속도는 정규화 좌표의 변화율 |
+| 모델 입력 | 최근 2초를 64개 시점으로 보간; Android 텐서 `[1, 64, 85]` |
+| 분류 모델 | GRU 2층, 은닉 크기 128, 파라미터 182,019개 |
+| 출력 클래스 | `normal` 정상 / `fall` 넘어지는 중 / `fallen` 넘어진 상태 |
+| 추론 간격 | 약 0.5초; Android에서는 실제 촬영 타임스탬프 사용 |
+| 품질 검사 | 구간 내 검출률 50% 미만이면 GRU 생략, `no_person` |
+| 상태 안정화 | `P(fall) + P(fallen) > 0.5`이면 위험 진입, `≤ 0.35`이면 해제 |
 
-```bash
-./venv_aihub/bin/python scripts/realtime_demo.py --source 00003_H_A_FY_C1
-```
+정규화는 화면 속 위치와 몸 크기의 영향을 줄이는 처리입니다. 카메라 각도나 가림까지 제거하지는 않습니다. 또한 보간은 입력 크기를 통일하며, 서로 다른 FPS 영상의 예측 결과까지 같게 만들지는 않습니다.
 
-```bash
-python3.11 -m venv venv && source venv/bin/activate && pip install -r requirements.txt
-```
+### 분류 결과를 이벤트로 바꾸는 규칙
 
-데모 영상은 `data/aihub_sample/` 에 있어야 한다 (git 제외 — AI Hub 재배포 금지). 아래 **팀 Drive** 에서 받는다.
-이름만 주면 찾고 같은 이름의 정답 라벨도 자동으로 붙는다. 창에 골격·상태·확률·FPS·알림 배너가 뜬다. `q` 로 종료.
-임의 영상은 `--source path/to/clip.mp4`. 상세는 [docs/how_to_run.md](docs/how_to_run.md).
+| 이벤트 | 조건 |
+|---|---|
+| `FALL` | `fall` 상태에 진입; 재발화 제한 적용 |
+| `FALLEN_IMMOBILE` · R1 | `fall` 또는 `fallen` 상태가 3초 연속 유지 |
+| `STILL_HORIZONTAL` · R2 | 몸통 수평과 작은 움직임 조건이 5초 유지 |
 
-### 팀 Drive — git 에 없는 데이터
+R1은 이름과 달리 움직임을 직접 검사하지 않고 **위험 상태의 지속 시간**을 검사합니다. 움직임을 직접 확인하는 규칙은 R2입니다. 이 임계값들은 현재 프로토타입 설정이며 실환경 검증을 통해 조정할 대상입니다.
 
-📁 **[falldata (Google Drive)](https://drive.google.com/drive/folders/1bgFi-Fg1-j8DAMG7fFPNnPsP4XqbxZph?usp=drive_link)** — 팀 내부 공유. 외부 재배포 금지 (AI Hub 이용약관).
+Python 데모의 가로 960픽셀 축소·FPS 기반 처리와 Android의 640×640 Letterbox·타임스탬프 기반 처리는 구분합니다. 구현은 [공통 모델 정의](scripts/pipeline_core.py), [Python 데모](scripts/realtime_demo.py), [Android 추론 엔진](CareGuardCamera/app/src/main/java/com/example/careguardcamera/inference/TimestampedFallModelEngine.kt)에서 확인할 수 있습니다.
 
-| Drive 경로 | 받을 위치 | 용량 | 용도 |
-|---|---|---|---|
-| `aihub_sample.zip` | `data/` 에서 압축 해제 → `data/aihub_sample/` | 895MB | **데모·평가 영상 32 + 라벨** — 데모에 필수 |
-| `kps_trim.npz` · `manifest_full.csv` | `runs/kps/` | 20MB | 재학습용 키포인트 (영상 없이 `train_stage2.py` 실행 가능) |
-| `omnifall/` `omnifall_syn/` `fallvision/` `urfd/` | (선택) | 60GB | 원본 영상 zip — 키포인트 재추출·데이터 확장할 때만 |
-| `models/` `runs_trim/` | (선택) | — | Colab 학습 산출물 원본 |
+## 실험 결과
 
-```bash
-# 브라우저로 aihub_sample.zip 을 받아 data/ 에 풀거나, rclone 이 있으면:
-rclone copyto gdrive:falldata/aihub_sample.zip data/aihub_sample.zip && unzip -q data/aihub_sample.zip -d data/
-```
+아래는 저장된 실험 기록이며, 앱 전체의 운영 성능을 측정한 결과는 아닙니다. **클립 분류, 영상 내 낙상 포착, 지속 알림은 서로 다른 지표**입니다.
 
-| 장면 | 이름 | 정답 낙상 | 데모 결과 (models/gru.pt) |
-|---|---|---|---|
-| 전면낙상 | `00003_H_A_FY_C1` | 4.3s | FALL 5.3s → CRITICAL 8.3s |
-| 측면낙상 | `00015_H_A_SY_C1` | 4.7s | FALL 4.8s → CRITICAL 7.8s |
-| 후면낙상 | `00151_H_A_BY_C1` | 6.3s | FALL 6.8s → CRITICAL 9.8s |
-| 비낙상 | `00047_H_A_N_C1` | — | 침대에 엎드릴 때 FALL 오탐 1회 (2초 뒤 해제, CRITICAL 없음) |
+### 현재 기본 모델: GRU v1 · 좌표 + 속도
 
-M3 MPS 에서 36 FPS (4K → 960 축소).
-
----
-
-## 1. 사용한 데이터셋
-
-### 학습 — OmniFall staged 3종 (1,193 클립 · 피험자 19명 · 50분)
-
-[OmniFall](https://arxiv.org/abs/2505.19889) 은 공개 낙상 데이터셋 8종을 16클래스로 재라벨링한 통합판이다
-(Zenodo 17170592). 그중 키포인트 추출을 마친 3종으로 학습했다.
-
-| 데이터셋 | 클립 | 피험자 | 환경 | 라이선스 |
-|---|---|---|---|---|
-| GMDCSA24 | 453 | 4 | 가정 3곳 (침대·의자) | MIT |
-| edf | 483 | 5 | 실내, 2 카메라 동기 | 연구 목적 |
-| caucafall | 258 | 10 | 가정 1곳 | 연구 목적 (Mendeley) |
-
-16클래스를 3클래스로 접었다: `fall`(넘어지는 중) · `fallen`(넘어진 채) · 나머지 → `normal`.
-클래스 분포 편향: `fallen` 179 (15%) 에 비해 `lying`(정상 누움) 은 **23 (1.9%)** 뿐이다 — 아래 4절.
-
-### 평가 — AI Hub 「낙상사고 위험동작 영상-센서 쌍 데이터」 샘플 32영상
-
-4장면(전면·측면·후면낙상·비낙상) × 8카메라, 병실, 10초 4K 60fps, 낙상 구간 프레임 라벨.
-베이스라인 비교·카메라 편차·실시간 데모에 쓴다. 본편 491GB 는 해외 IP 차단으로 미확보.
-AI Hub 공식 베이스라인(MediaPipe → RandomForest × 8카메라)은 재현해 두었다 ([docs/aihub_baseline.md](docs/aihub_baseline.md)).
-
-### 확보했지만 아직 안 쓴 것 (팀 Drive `falldata/`)
-
-OmniFall 나머지 4종(LE2I·MCFD·UP_Fall·OCCU, 26GB) · OF-Synthetic 12,000개(AV1, `lying` 1,200) · FallVision 16GB.
-Colab 세션 회수로 키포인트 추출을 못 끝냈다. 추가 후보(CMDFALL 7시간, Toyota Smarthome 등)와
-우선순위는 [docs/dataset_candidates.md](docs/dataset_candidates.md).
-
----
-
-## 2. 파이프라인 구조
-
-프레임마다 1~4, 0.5초마다 5~7, 프레임마다 8. 자세한 시나리오는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-| 단계 | 하는 일 | 왜 |
+| 평가 조건 | 지표 | 기록된 결과 |
 |---|---|---|
-| 1. YOLOv11n-pose | 사람 검출 + COCO 17관절 (x, y, conf) | 영상 픽셀은 여기까지만 쓴다. 이후는 좌표만 |
-| 2. 1인 선택 | 가장 큰 박스 한 명 | 학습 데이터가 1인 클립. 없으면 전부 0 |
-| 3. 정규화 | 엉덩이 중점 → 원점, 몸통 길이 → 1 | **카메라 위치·해상도에 무관한 좌표.** AI Hub 가 카메라별 모델 8개를 둔 문제를 이 단계가 대신한다 |
-| 4. 속도 채널 | 관절당 (Δx, Δy)·fps 추가 → 5채널 | 모델이 "모양" 이 아니라 "변화" 를 보게 한다. 엉덩이가 원점이라 발목 Δy = 높이 하락률 |
-| 5. 링 버퍼 | 최근 2초(120프레임) 유지 | 낙상은 한 장으로는 알 수 없는 시간의 변화다 |
-| 6. 리샘플 → GRU | 64프레임으로 맞춰 (64,17,5) 입력 → 확률 3개 | GRU 2층×128, 182K 파라미터. 시계열을 순서대로 읽는다 |
-| 7. 히스테리시스 | 위험(fall+fallen) 확률 0.5 진입 / 0.35 해제 | 경계 근처 떨림 방지 |
-| 8. 규칙 (`ImmobilityDetector`) | R1: 위험 상태 3초 연속 → `FALLEN_IMMOBILE` CRITICAL · R2: 몸통 수평 + 미동 5초 → `STILL_HORIZONTAL` WARNING · `fall` 진입 에지 → `FALL` | GRU 는 2초 창만 본다. 긴 시간은 규칙이 센다 |
+| OmniFall 피험자 단위 5-fold | 위험(fall + fallen) Recall / FPR | **0.860 ± 0.026 / 0.131 ± 0.077** |
+| AI Hub 낙상 24영상 | 영상 단위 낙상 Recall | **0.917** |
+| AI Hub 비낙상 8영상 | 위험 판정 윈도우 비율 | **0.162**; 좌표만 사용 시 0.346 |
+| URFD 낙상 30영상 · 학습 미사용 외부셋 | 영상 단위 낙상 Recall | **0.867** |
+| URFD 일상 40영상 | R1 오경보가 발생한 영상 수 | **3 / 40** |
 
-**모델 = "이 2초에 무슨 일인가", 규칙 = "그 판정이 몇 초 이어지나."** 사람 검출률 50% 미만 창은 GRU 를 건너뛴다
-(빈 입력에 `fallen` 0.79 를 내기 때문).
+AI Hub 32영상은 독립적인 32장면이 아니라 **4장면 × 8카메라**입니다. 영상 단위 Recall은 낙상 순간의 포착을 나타내며, 이후 넘어진 상태의 지속 감지까지 보장하지 않습니다.
 
-### 결과 요약
+출처: [속도 특징 비교](docs/results_velocity.md) · [데이터 확장·외부 평가](docs/results_data_expansion.md)
 
-| | AI Hub 공식 베이스라인 | 본 파이프라인 |
+### 실험으로 남긴 판단
+
+| 시도 | 관찰 결과 | 현재 선택 |
 |---|---|---|
-| 입력 차원 | 997,200 (얼굴 랜드마크 84%) | 5,440 |
-| 카메라 대응 | 위치별 모델 8개 | 단일 모델 |
-| 낙상 Recall (AI Hub 32영상) | 0.833 | **0.917** |
-| 비낙상 8영상 위험 윈도우 비율 | — | 0.162 (좌표만 쓸 때 0.346) |
-| 5-fold Recall / FPR (OmniFall 피험자 단위) | — | 0.860 ± 0.026 / 0.131 |
+| 좌표에 속도 특징 추가 | AI Hub 비낙상 위험 윈도우 비율이 0.346 → 0.162로 감소 | `posvel` 입력 사용 |
+| 학습 데이터 확장: 약 1,194 → 6,223클립 | v4의 URFD 낙상 Recall은 1.000으로 증가했지만 일상 R1 오경보도 3/40 → 11/40으로 증가 | 기본 모델은 v1 유지 |
+| 합성 누움 데이터 추가 | v5b의 일부 오경보가 줄었지만, AI Hub 낙상 후 위험 유지율도 v1 0.43 → 0.23으로 감소 | v5b는 실험 모델로 보관 |
+| FALL 이후에만 R1 허용 | 정상적으로 눕는 장면에서도 FALL이 먼저 발생해 오경보가 해결되지 않음 | 기존 규칙 유지, 공간 정보 추가 검토 |
 
-수치의 출처: [docs/results_velocity.md](docs/results_velocity.md) (현재 모델) ·
-[docs/results_final.md](docs/results_final.md) (좌표만 쓴 이전 모델, 모델 6종 비교) ·
-[docs/results_aihub_pipeline.md](docs/results_aihub_pipeline.md) (AI Hub 카메라 편차).
+**클립 성능이나 낙상 Recall 하나만으로 모델을 교체하지 않고, 낙상 후 유지율과 일상 오경보를 함께 비교합니다.** 규칙 실험은 [R1 변형 결과](docs/results_rules.md)에 기록되어 있습니다.
 
----
+### 데이터와 재현 범위
 
-## 3. 파일 역할
+- 기본 학습: OmniFall의 GMDCSA24·edf·caucafall, 약 1,194클립·피험자 19명. 초기 정제 실험은 1,193클립으로 기록되어 있으므로 실험 버전을 구분합니다.
+- 후속 실험: UP_Fall·LE2I·MCFD·OCCU 및 OF-Synthetic 추가 평가를 진행했습니다.
+- 같은 피험자가 학습·평가에 섞이지 않도록 피험자 단위로 분할하고, 데이터셋 하나를 제외하는 환경 일반화 평가도 수행했습니다.
+- 데이터셋과 원본 영상은 저장소에 포함하지 않습니다. 이용·재배포 조건은 데이터셋마다 다르므로 [데이터 레지스트리](configs/datasets.yaml)를 참고하고 실제 활용 전 원본 조건을 확인해야 합니다.
 
-```
-models/
-  gru.pt                  배포 모델 (posvel, 5채널). 데모 기본값
-  gru_pos.pt              좌표만 쓴 이전 모델 (비교용)
+## 기술 스택
 
-scripts/                  ── 현재 파이프라인 ──
-  pipeline_core.py        공통 모듈: normalize · add_velocity · resample · build_model · load_checkpoint
-  realtime_demo.py        영상 파일 → 실시간 판정 + 오버레이 + events.jsonl (ImmobilityDetector 포함)
-  train_stage2.py         6모델 학습 · 피험자 k-fold · 데이터셋 leave-one-out · --feat pos|posvel · --save-model
-  extract_keypoints.py    영상 → YOLO 키포인트 .npy (Colab 단독 실행용, normalize 복사본 유지)
-  retrim_keypoints.py     edf 자르기 오류 수정 (fps 역산)
-  pack_keypoints.py       .npy 다수 → .npz 하나 (Drive 병목 회피)
-  build_manifest.py       OmniFall zip 구조 → manifest.csv
-  expand_one.sh           데이터셋 하나씩 해제·추출 (Colab 세션 회수 대비)
-  aihub_pipeline_eval.py  AI Hub 32영상 슬라이딩 윈도우 평가 → predictions.json
-  aihub_infer.py          AI Hub 공식 베이스라인(RandomForest) 재현
-  make_demo_report.py     events.jsonl + mp4 → 데모 보고서 HTML/PDF
-  make_pipeline_report.py AI Hub 평가 시각 보고서
-  make_testset_report.py  OmniFall test 시각 보고서
-  make_report.py          베이스라인 보고서
-scripts/archive/          AI Hub 스트리밍 다운로드 시도 · 데이터 확보 스크립트 (완료/중단)
+| 영역 | 기술 |
+|---|---|
+| Android | Kotlin, Jetpack Compose, CameraX, ONNX Runtime, WebRTC |
+| ML 학습·평가 | Python, PyTorch, Ultralytics YOLO, NumPy, OpenCV |
+| 백엔드 | Java 17, Spring Boot, Spring Data JPA |
+| 데이터 저장 | PostgreSQL |
 
-docs/
-  ARCHITECTURE.md         구조 · 10단계 동작 시나리오 · 모델 카드 · 규칙 명세 · 한계
-  ISSUES.md               서비스 적용 전 문제점 12개 (팀 논의용)         ← 4절
-  results_velocity.md     현재 모델: 속도 채널 실험 (pos vs posvel)
-  results_final.md        이전 모델: 6모델 비교 · 5-fold · leave-one-out
-  results_aihub_pipeline.md  AI Hub 샘플 평가 · 카메라 편차 · FPR 원인
-  aihub_baseline.md / baseline_run.md  AI Hub 공식 모델 분석·재현
-  dataset_candidates.md   데이터셋 후보와 우선순위
-  how_to_run.md           팀원용 실행 가이드: 환경 · 데이터 받기 · 데모 · 평가 · 재학습
-  setup.md                Colab CLI · Drive · rclone 함정 (학습 인프라 메모)
-  SUMMARY.md              경과 총정리 (9-24 기준)
-docs/archive/             계획서 · 중간 결과 (참고용)
+## 현재 한계와 다음 작업
 
-configs/datasets.yaml     공개 데이터셋 레지스트리 (URL · 라이선스 · 구조)
-requirements.txt          실행 환경 (Python 3.11)
-data/aihub_sample/        데모·평가 영상 32 + 라벨       (git 제외)
-runs/                     학습 결과 · 데모 출력 · 보고서 · 캐시  (git 제외)
-aihub_model/              AI Hub 공식 모델 100MB          (git 제외)
+- **정상 누움과 낙상의 혼동:** 관절 좌표·속도만으로 침대와 바닥의 맥락을 구분하기 어렵습니다. 침대 ROI·바닥 위치 등 공간 정보가 개선 후보입니다.
+- **단일 인물 선택:** 가장 큰 박스를 선택하며 동일 인물을 추적하지 않습니다. 여러 사람이 등장하면 대상이 바뀔 수 있습니다.
+- **장시간·외부망 검증:** 짧은 영상 실험을 장시간 운영 성능으로 일반화할 수 없습니다. 실제 단말 2대, 외부망 WebRTC·TURN, 발열·배터리·프레임 누락 검증이 필요합니다.
+- **출시 기능:** 보호자 인증·환자별 접근 권한·HTTPS·FCM 등 운영 기능을 완성해야 합니다. 개발용 카메라 토큰 및 라이브 접근 제한은 서비스 인증을 대체하지 않습니다.
+- **앱 경로 정리:** 실제 ONNX 추론을 사용하는 `CameraLiveScreen`과, 관절 추출 스텁이 남은 레거시 `PoseAnalyzer` 경로가 공존합니다.
+
+## 실행 안내
+
+### Android와 백엔드
+
+1. Java 17과 PostgreSQL을 준비하고 [백엔드 실행 안내](fall_detection_backend/README.md)에 따라 초기 스키마와 접속 설정을 구성합니다.
+2. `fall_detection_backend/`에서 `./gradlew bootRun`으로 서버를 실행합니다.
+3. Android Studio에서 `CareGuardCamera/`를 열고 SDK·Gradle 환경을 준비합니다.
+4. [앱 연결 안내](CareGuardCamera/BACKEND_CONNECTION.md)에 따라 서버 주소를 설정합니다. 에뮬레이터 기본값은 `http://10.0.2.2:8080`입니다.
+5. 카메라 역할에서 연결 코드를 발급하고, 보호자 역할에서 코드를 입력합니다. 라이브 기능 설정은 [실시간 MVP 안내](CareGuardCamera/LIVE_VIDEO_MVP.md)를 따릅니다.
+
+### Python 영상 데모
+
+```bash
+python3.11 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python scripts/realtime_demo.py --source /path/to/video.mp4
 ```
 
-**git 에 없는 것** — 위 "팀 Drive" 표. `yolo11n-pose.pt` 는 첫 실행 시 ultralytics 가 자동 다운로드.
-`requirements.txt` 로 환경을 만든다 (Python 3.11).
+데모에는 입력 영상과 YOLO pose 가중치가 필요합니다. GRU 체크포인트는 `models/gru.pt`, Android용 ONNX 모델과 명세는 앱의 `assets/`에 포함되어 있습니다. 자세한 데이터 준비·학습·평가 명령은 [ML 실행 가이드](docs/how_to_run.md)를 참고하세요.
 
----
+### 검증 기록과 명령
 
-## 4. 현재 찾은 문제점
+2026-11-04 로컬 검사에서 모델 파일 해시 검증과 PyTorch ↔ ONNX 비교가 통과했습니다. 비교 입력 2개의 최대 logit 차이는 약 `4.2 × 10⁻⁷`입니다. 이는 변환 모델의 수치 일치 검사이며 실제 영상에서의 정확도 검증은 아닙니다.
 
-전체는 [docs/ISSUES.md](docs/ISSUES.md) — 항목마다 관찰(실측) → 왜 문제인가 → 선택지 → 팀이 정해야 할 것.
+```bash
+python scripts/live_model_parity.py --compare-gru
+```
 
-| # | 문제 | 심각도 | 결정 필요 |
-|---|---|---|---|
-| 1 | 위험 상태가 한 판정만 `normal` 로 빠져도 3초 타이머가 리셋된다 | 높음 | 규칙 설계 — 연속 조건 vs 비율 조건 |
-| 2 | 3초는 데모용. 서비스 값(30초? 3분?)은 데이터로 검증 불가 | 높음 | 서비스 정의 — 다단계 알림 |
-| 3 | 낙상 직후 사람이 가려지면 "안 보임 = 판정 없음" 이 된다 | 높음 | `FALL_THEN_LOST` 이벤트 |
-| 4 | `lying` 1.9% — 침대에 누우면 낙상으로 본다. 속도 채널로 줄였으나(R1 발화 4/8 → 1/8) 남아 있다 | 매우 높음 | 데이터 확장 장소 · 침대 ROI |
-| 5 | 한국 노인 가정의 **바닥 생활**이 학습 데이터에 없다 — 정상 바닥 생활이 곧 `fallen` | 매우 높음 | 타깃 환경 (요양원 vs 가정) |
-| 6 | 새 환경에서 FPR 0.13 → 0.20 (환경 교차 실측) | 높음 | 인지 |
-| 7 | 1인 전제 — 보호자가 다가오면 대상이 바뀐다 | 중간 | 1차 타깃을 독거로 한정? |
-| 8 | 클립당 FPR 은 서비스 지표가 아니다. **시간당 오경보**를 잴 긴 정상 영상이 없다 | 높음 | 평가 영상 확보 |
-| 9 | RTSP·엣지·다중 카메라 미구현 | 중간 | 배포 형태 |
-| 10 | 침실 카메라 프라이버시 — 현 구조는 골격만 저장하면 동작한다 | 중간 | 영상 저장 정책 |
-| 11 | 임계값이 4장면에 맞춰짐 · 테스트 코드 없음 · 데이터 확장 미완 | 낮음 | — |
-| 12 | YOLOv11 AGPL · 일부 데이터 CC-BY-NC — 공모전은 무관, 서비스화 시 교체 | 중간 | 서비스화 시 |
+앱·백엔드의 단계별 과거 검증 범위와 실행 명령은 [앱 연결 문서](CareGuardCamera/BACKEND_CONNECTION.md) 및 [실시간 MVP 문서](CareGuardCamera/LIVE_VIDEO_MVP.md)에 남겨 두었습니다. 이번 README 정리에서 전체 앱·백엔드 테스트를 재실행하지는 않았습니다.
 
-**지금 바로 할 수 있는 것**: `runs/demo/*.jsonl` 로 R1 규칙 변형 오프라인 비교(1번) · `FALL_THEN_LOST` 추가(3번) ·
-`normalize()` 회귀 테스트(11번). **데이터가 있어야 하는 것**: 긴 정상 영상(8번), 좌식 생활 장면(5번), `lying` 대량(4번).
+## 저장소 구성과 상세 기록
+
+```text
+CareGuardCamera/          Android 보호자·카메라 앱 및 ONNX 모델
+fall_detection_backend/  Spring Boot API
+scripts/                 관절 추출·학습·평가·데모·모델 검증
+models/                  GRU 기본 모델과 비교용 체크포인트
+tests/                   Python 모델 계약·일치성 테스트
+docs/                    실험 결과·설계·실행 가이드·앱 화면
+configs/                 데이터셋 레지스트리
+ML_RESEARCH.md           기존 ML 중심 README 보존본
+```
+
+- [ML 연구 기록과 기존 데모 결과](ML_RESEARCH.md) — 이전 README를 보존한 문서로, 데이터 확보 상태 등 일부 내용은 당시 기준입니다.
+- [모델 비교·피험자 교차검증](docs/results_final.md)
+- [속도 특징 도입 결과](docs/results_velocity.md)
+- [데이터 확장과 기본 모델 유지 근거](docs/results_data_expansion.md)
+- [알림 규칙 실험](docs/results_rules.md)
+- [백엔드 설계](docs/backend/backend-design.md)
+- [남은 ML 이슈](docs/ISSUES.md)
+
+이 README는 공유된 모델 정리·앱 화면·아키텍처 문서를 바탕으로 구성하고, 현재 코드와 후속 실험 기록에 맞춰 상태를 구분했습니다. 원본 PDF의 과거 계획을 현재의 미구현 항목으로 그대로 옮기지 않았습니다.
