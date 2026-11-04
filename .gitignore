@@ -46,3 +46,9 @@ aihub_model/
 # 배포용 학습 가중치 (자체 학습, 0.7MB) — 팀원이 데모를 바로 돌릴 수 있게 커밋한다
 !models/
 !models/*.pt
+# 배포 비밀값
+deploy/.env
+
+# Android runtime models bundled with the app
+!CareGuardCamera/app/src/main/assets/yolo11n-pose.onnx
+!CareGuardCamera/app/src/main/assets/gru.onnx

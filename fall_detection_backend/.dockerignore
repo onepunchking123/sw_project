@@ -1,0 +1,9 @@
+.gradle
+build
+bin
+.local
+out
+*.log
+application-local.properties
+scripts/__pycache__
+HELP.md
